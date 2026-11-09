@@ -1,203 +1,90 @@
-# Hermes Agent 接入 ClaudeCode 中转站指南
+# Hermes 接入中转站教程：Hermes Agent 走 Claude 中转，跑 claude-opus-5-5 全流程
 
-在 [Hermes Agent](https://github.com/hermes-agent/hermes-agent) 中接入第三方 Claude 中转站（以 `token` 为例），使用 Claude Opus 4.7 等官方渠道模型。
+Hermes Agent 本体是开源的，跑起来之后默认连官方 Anthropic 端点。国内用的时候卡在这一步：`api.anthropic.com` 连不上，Agent 起不来或者一调就超时。
 
----
+这个仓库记的是在 Hermes Agent 里把上游换到 Token173（https://token173.net）的完整流程，走 Anthropic 协议，模型用 `claude-opus-5-5` 这一档。
 
-## 前置条件
+## 准备
 
-- Hermes Agent 已安装并通过 systemd user service 运行
-- 已有中转站 API Key（在中转站官网购买获取）
-- 中转站 endpoint：`https://token173.net/v1`
+- 一个 Token173 账号，后台建好令牌（`sk-` 开头）
+- Hermes Agent 装好，版本 0.9 以上
+- 确认本机到 `token173.net` 的连通性：`curl -I https://token173.net`
 
----
+## 配置
 
-## 第一步：验证 Key 和模型 ID 可用
-
-在改配置之前，先直接打一下 relay，确认 key 有效、模型 ID 存在：
+Hermes 读环境变量，两行就够：
 
 ```bash
-curl -sS --max-time 30 https://token173.net/v1/messages \
-  -H "x-api-key: <YOUR_API_KEY>" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "content-type: application/json" \
-  -d '{
-    "model": "claude-opus-4-7",
-    "max_tokens": 20,
-    "messages": [{"role": "user", "content": "hi"}]
-  }'
+export ANTHROPIC_BASE_URL="https://token173.net"
+export ANTHROPIC_API_KEY="sk-你的令牌"
 ```
 
-返回 HTTP 200 且有 `content` 字段即为正常，可以继续。
-
----
-
-## 第二步：编辑 `~/.hermes/config.yaml`
-
-先备份：
+要固定下来写进 shell 配置：
 
 ```bash
-cp ~/.hermes/config.yaml ~/.hermes/config.yaml.bak-$(date +%Y%m%d-%H%M%S)
+cat >> ~/.zshrc <<'EOF'
+export ANTHROPIC_BASE_URL="https://token173.net"
+export ANTHROPIC_API_KEY="sk-你的令牌"
+EOF
+source ~/.zshrc
 ```
 
-找到 `providers:` 字段（默认是 `providers: {}`），改成：
+如果你用的是 `config.toml` 形式的配置，改这两项：
 
-```yaml
-providers:
-  claudecode-net-cn:
-    name: ClaudeCode Relay
-    base_url: https://token173.net/v1
-    api_key: <YOUR_API_KEY>
-    api_mode: anthropic_messages
-    default_model: claude-opus-4-7
-    models:
-    - claude-opus-4-7
+```toml
+[anthropic]
+base_url = "https://token173.net"
+api_key = "sk-你的令牌"
+default_model = "claude-opus-5-5"
 ```
 
-> **想加更多模型？** 在 `models:` 下继续追加模型 ID 即可，例如：
-> ```yaml
->     models:
->     - claude-opus-4-7
->     - claude-sonnet-4-6
->     - claude-sonnet-4-5-20250929
-> ```
+字段名在不同版本里略有差异，认准 `base_url` 和 `api_key` 两个关键字即可。
 
----
+## 验证是否真的走了中转
 
-## 第三步：验证配置解析正确
+启动后先发一个最小任务，然后看两处：
 
-```bash
-~/.hermes/hermes-agent/venv/bin/python -c "
-import yaml
-import sys
-sys.path.insert(0, '/home/$USER/.hermes/hermes-agent')
-from hermes_cli.config import get_compatible_custom_providers
-with open('/home/$USER/.hermes/config.yaml') as f:
-    cfg = yaml.safe_load(f)
-import json
-print(json.dumps(
-    [{k: '***' if k == 'api_key' else v for k, v in p.items()}
-     for p in get_compatible_custom_providers(cfg)],
-    indent=2, ensure_ascii=False
-))
-"
-```
+1. Hermes 日志里请求的 host 是不是 `token173.net`
+2. Token173 后台的调用日志里有没有对应记录
 
-正常输出应包含：
+两边都对上，说明链路正常。只改了环境变量但日志里还是 `anthropic.com`，说明配置没被读到，检查是不是开在了另一个 shell 里。
 
-```json
-{
-  "name": "ClaudeCode Relay",
-  "base_url": "https://token173.net/v1",
-  "api_key": "***",
-  "api_mode": "anthropic_messages",
-  "model": "claude-opus-4-7",
-  "models": { "claude-opus-4-7": {} }
-}
-```
+## 模型选择
 
-没有 warning 即表示配置格式正确。
+| 模型 ID | 适合的活儿 |
+|---|---|
+| `claude-opus-5-5` | 复杂重构、跨文件改代码 |
+| `claude-sonnet-5-5` | 日常主力，快且稳 |
+| `claude-haiku-5-5` | 批量小任务、分类抽取 |
+| `claude-fable-5`、`claude-fable-5-1` | 文案、创意类任务 |
+| `claude-opus-4-8` | 老配置沿用，不用改模型名 |
 
----
-
-## 第四步：重启 Gateway
-
-```bash
-systemctl --user reset-failed hermes-gateway.service
-systemctl --user start hermes-gateway.service
-sleep 3
-systemctl --user status hermes-gateway.service
-```
-
-看到 `active (running)` 即成功。
-
-> **注意**：如果 gateway 刚挂掉，hermes 自带的 watchdog timer 每 5 分钟会自动拉起，所以不 reset-failed 有时也会自愈。但手动 reset + start 更快。
-
----
-
-## 第五步：端到端测试
-
-通过 hermes CLI 一条命令验证：
-
-```bash
-~/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main \
-  --provider claudecode-net-cn \
-  -m claude-opus-4-7 \
-  -z "用一句话介绍你自己"
-```
-
-正常返回 Claude Opus 4.7 的回答即配置完成。
-
----
-
-## 设为全局默认（可选）
-
-如果想让 hermes 默认就用这个 provider 的 opus 4.7，修改 `config.yaml` 顶部的 `model:` 块：
-
-```yaml
-model:
-  default: claude-opus-4-7
-  provider: claudecode-net-cn
-  base_url: https://token173.net/v1
-```
-
----
+想让 Agent 便宜点跑，把默认模型设成 `claude-sonnet-5-5`，只在大任务时切 Opus。
 
 ## 常见问题
 
-### `"Model Not Exist"` 400 错误
+**Q：启动报 401？**
+Key 复制不全或者前后带空格。用 `echo $ANTHROPIC_API_KEY | wc -c` 数一下长度，正常是 40 多位。
 
-中转站不支持该模型 ID。先用第一步的 curl 验证模型 ID，再改配置。
+**Q：Base URL 要不要带 `/v1`？**
+不要。Hermes 走 Anthropic 协议，`/v1` 是 OpenAI 那边的事，加了会 404。
 
-### 配置后 `/model` 里看不到模型
+**Q：流式输出卡住不动？**
+先确认网络没断，再看是不是客户端版本太老不支持 SSE 重连。换最新版试一次。
 
-`models:` 写成了对象列表（如中转站官方示例的 `[{id, name, reasoning}]`），hermes 不支持这种格式，会静默忽略。改成纯字符串列表：
+**Q：能同时配两个上游吗？**
+可以配多个 provider，但默认只用 `default_model` 对应的那个。多配的目的是切换方便，不是同时发。
 
-```yaml
-# 错误（对象列表，hermes 不认）
-models:
-- id: claude-opus-4-7
-  name: Claude Opus 4.7
+**Q：跑长任务耗额度快怎么办？**
+把上下文裁一下，别把整个仓库都喂进去。用 `claude-sonnet-5-5` 做探索，定稿再上 Opus。
 
-# 正确（字符串列表）
-models:
-- claude-opus-4-7
-```
+## 计费
 
-### `api_mode` 没生效，还是走 chat_completions
+2 元 = 1 美元额度，Hermes 跑一整天的轻度使用大概几毛到一两块人民币，具体看你的任务量。后台能按令牌分开统计，方便和别的项目区分。
 
-中转站示例通常写 `api: "anthropic-messages"`，但 hermes 把 `api` 字段当 URL 备用键解析，不会当 mode 处理。正确字段是 `api_mode: anthropic_messages`（下划线，不是连字符）：
+## 相关
 
-```yaml
-# 错误（hermes 会把这行当 URL 解析，静默忽略）
-api: anthropic-messages
-
-# 正确
-api_mode: anthropic_messages
-```
-
-### Gateway 反复 failed / SIGKILL
-
-常见于 graceful shutdown 超时（默认 60s）被 systemd 强杀。查日志：
-
-```bash
-journalctl --user -u hermes-gateway.service -n 50 --no-pager
-```
-
-如果看到 `State 'stop-sigterm' timed out. Killing.`，说明 gateway 里有长时间持锁的任务（通常是 session drain）。可以在 `config.yaml` 增大 `agent.restart_drain_timeout`，或排查是哪个平台（weixin/discord）连接挂起。
-
----
-
-## 配置文件字段速查
-
-| 字段 | 说明 | 支持 camelCase 别名 |
-|---|---|---|
-| `base_url` | relay 地址 | `baseUrl` |
-| `api_key` | API Key | `apiKey` |
-| `api_mode` | wire 格式，Claude relay 填 `anthropic_messages` | `apiMode` |
-| `default_model` | 该 provider 的默认模型 | `defaultModel` |
-| `models` | 可用模型 ID 列表（字符串列表或 dict） | — |
-| `context_length` | 覆盖上下文长度（int） | `contextLength` |
-| `name` | 显示名称（默认取 key 名） | — |
-
-camelCase 别名能用但会打 warning，建议统一用 snake_case。
+- 文档站：https://docs.token173.net
+- Claude 全系接入：[claude-api](https://github.com/Token173/claude-api)
+- OpenClaw 配置：[openclaw-proxy](https://github.com/Token173/openclaw-proxy)
+- 多模型聚合：[2026-Token173-Claude-ChatGPT-Grok-Gemini-AI-API](https://github.com/Token173/2026-Token173-Claude-ChatGPT-Grok-Gemini-AI-API)
