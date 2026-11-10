@@ -56,7 +56,7 @@ default_model = "claude-opus-5-5"
 | `claude-opus-5-5` | 复杂重构、跨文件改代码 |
 | `claude-sonnet-5-5` | 日常主力，快且稳 |
 | `claude-haiku-5-5` | 批量小任务、分类抽取 |
-| `claude-fable-5`、`claude-fable-5-1` | 文案、创意类任务 |
+| `claude-fable-5-2`、`claude-fable-5-1` | 文案、创意类任务 |
 | `claude-opus-4-8` | 老配置沿用，不用改模型名 |
 
 想让 Agent 便宜点跑，把默认模型设成 `claude-sonnet-5-5`，只在大任务时切 Opus。
